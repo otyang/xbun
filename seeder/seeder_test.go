@@ -6,13 +6,14 @@ import (
 	"log"
 	"testing"
 
-	dbstore "github.com/otyang/go-dbstore"
+	"github.com/otyang/xbun"
 	"github.com/stretchr/testify/assert"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/driver/sqliteshim"
 )
 
 var (
-	test_driver = dbstore.DriverSqlite
+	test_driver = sqliteshim.ShimName
 	test_dsn    = "file::memory:?cache=shared"
 )
 
@@ -39,11 +40,11 @@ var (
 	allModels = append(mmodels, imodels...)
 )
 
-func setUp(t *testing.T, test_driver dbstore.DBDriver, test_dsn string) (context.Context, *bun.DB) {
+func setUp(t *testing.T, test_driver string, test_dsn string) (context.Context, *bun.DB) {
 	ctx := context.Background()
 
 	// connect
-	db, err := dbstore.NewDBConnection(test_driver, test_dsn, 1, true)
+	db, err := xbun.NewDBConn(test_driver, test_dsn, 1, true)
 	assert.NoError(t, err)
 
 	return ctx, db
