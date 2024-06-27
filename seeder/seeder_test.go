@@ -49,7 +49,7 @@ func setUp(t *testing.T, test_driver dbstore.DBDriver, test_dsn string) (context
 	return ctx, db
 }
 
-func tearDown(t *testing.T, db *bun.DB, modelsPtr ...any) {
+func tearDown(db *bun.DB, modelsPtr ...any) {
 	for _, model := range modelsPtr {
 		_, err := db.NewDropTable().Model(model).Exec(context.TODO())
 		if err != nil {
@@ -60,7 +60,7 @@ func tearDown(t *testing.T, db *bun.DB, modelsPtr ...any) {
 
 func TestSeeder_CreateTables(t *testing.T) {
 	ctx, db := setUp(t, test_driver, test_dsn)
-	defer tearDown(t, db, allModels...)
+	defer tearDown(db, allModels...)
 
 	err := CreateTables(ctx, db, mmodels, imodels)
 	assert.NoError(t, err)
@@ -97,7 +97,7 @@ func TestSeeder_CreateIndex(t *testing.T) {
 	}
 
 	ctx, db := setUp(t, test_driver, test_dsn)
-	defer tearDown(t, db, (*Movies)(nil))
+	defer tearDown(db, (*Movies)(nil))
 
 	err := CreateTables(ctx, db, []any{(*Movies)(nil)}, nil)
 	assert.NoError(t, err)
