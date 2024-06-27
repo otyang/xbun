@@ -1,70 +1,100 @@
-# xbun  
+# xbun: Database Library for Go
 
-A collection of utility functions to streamline common database operations using the Bun: [[https://bun.uptrace.dev/](https://bun.uptrace.dev/)] SQL query builder for Go.
+**xbun** is a Go library that simplifies interaction with relational databases. It provides a clean and concise API for performing common operations like creating, reading, updating, and deleting data. It leverages the powerful Bun library ([https://github.com/uptrace/bun](https://github.com/uptrace/bun)) underneath, offering a familiar interface with additional helper functions.
 
-## Features
+### Features
 
-* **Simplified CRUD:** 
-   - `Create` functions with optional duplicate handling
-   - `CreateBulk` for inserting multiple records efficiently
-   - Easy retrieval with `SelectOneByPK`, `SelectOneWhere`, and `SelectManyWhere`
-   - Flexible updating with `UpdateOneByPK`, `UpdateManyByPK`, and `UpdateOneWhere`
-   - Convenient deletion using `DeleteByPK` and `DeleteWhere`
+* Supports PostgreSQL and SQLite databases.
+* Provides functions for:
+    * Creating new records (with optional duplicate handling).
+    * Deleting records by primary key or custom criteria.
+    * Performing upserts (insert or update on conflict).
+    * Updating records by primary key or custom criteria.
+    * Finding single records by primary key or custom criteria.
+    * Finding multiple records with pagination support.
+    * Executing database transactions.
+* Configurable query logging for debugging purposes.
+* Automatic connection pooling management.
 
-* **Upsert:** Effortlessly handle insert or update actions in a single operation.
+### Installation
 
-* **Transactions:** Use `Transaction` for atomic database updates.
+**xbun** requires Go 1.18 or later. To install:
 
- 
-## Quick Example
+```bash
+go get -u github.com/your-username/xbun
+```
+
+Replace `your-username` with your actual Go module path.
+
+### Usage
+
+**1. Connect to your database:**
 
 ```go
 package main
 
 import (
-  "context"
-  "github.com/uptrace/bun"
-  "github.com/otyang/xbun" 
+    "context"
+    "fmt"
+
+    "github.com/your-username/xbun"
 )
 
-type User struct {
-  bun.BaseModel `bun:"table:users"` // Assuming you use Bun's BaseModel
-  ID            int64             `bun:"id,pk,autoincrement"`
-  Name          string            `bun:"name"`
-}
-
 func main() {
-  // ... Connect to your database using Bun.
+    db, err := xbun.NewDBConn("pg", "postgres://user:password@host:port/database", 10, true)
+    if err != nil {
+        panic(err)
+    }
+    defer db.Close()
 
-  ctx := context.Background()
-
-  // Create a new user
-  user := &User{Name: "John Doe"}
-  err := xbun.Create(ctx, db, user, true) // Ignore duplicates
-  if err != nil {
-    // ... Handle error
-  }
-
-  // Update an existing user
-  user.Name = "Jane Doe"
-  err = xbun.UpdateOneByPK(ctx, db, user)
-  if err != nil {
-    // ... Handle error 
-  }
+    // Use the db connection throughout your application
 }
 ```
 
-For detailed descriptions and usage notes of each function, please refer unit test or package documentation on go pkg website.
+**2. Define your database models:**
 
-## Contributing
+```go
+type User struct {
+    ID       int64  `bun:",pk"`
+    Username string `bun:"unique"`
+    Email    string
+}
+```
 
-We welcome contributions! To submit changes or report issues:
+**3. Perform CRUD operations:**
 
-1. Fork the repository.
-2. Create a branch for your changes.
-3. Open a pull request with a clear explanation.
+```go
+func CreateUser(ctx context.Context, db *xbun.DB, user *User) error {
+    return xbun.Create(ctx, db, false, user) // Insert without ignoring duplicates
+}
 
-## License
+func FindUserByID(ctx context.Context, db *xbun.DB, id int64) (User, error) {
+    var user User
+    return xbun.FindOne(ctx, db, &user, func(q *bun.SelectQuery) *bun.SelectQuery {
+        return q.Where("id = ?", id)
+    })
+}
 
-This project is licensed under the MIT License - see the LICENSE file for details.
- 
+func UpdateUserEmail(ctx context.Context, db *xbun.DB, id int64, newEmail string) error {
+    return xbun.Update(ctx, db, func(q *bun.UpdateQuery) *bun.UpdateQuery {
+        return q.Set("email = ?", newEmail).Where("id = ?", id)
+    })
+}
+
+func DeleteUser(ctx context.Context, db *xbun.DB, id int64) (int64, error) {
+    return xbun.Delete(ctx, db, &User{ID: id}, nil) // Delete by primary key
+}
+```
+
+**4. Transactions:**
+
+```go
+func TransferFunds(ctx context.Context, db *xbun.DB, fromID, toID int64, amount float64) error {
+    return xbun.Transaction(ctx, db, func(ctx context.Context, tx bun.Tx) error {
+        // Perform operations within the transaction
+        return nil
+    })
+}
+```
+
+**Please refer to the full source code for detailed documentation of all functions and available options.**

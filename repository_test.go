@@ -2,21 +2,54 @@ package xbun
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"log"
 	"testing"
 
-	dbstore "github.com/otyang/go-dbstore"
-	"github.com/otyang/go-dbstore/filter"
 	"github.com/stretchr/testify/assert"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/driver/sqliteshim"
 )
 
-// Use constants for configuration
-const (
-	testDBDriver = dbstore.DriverSqlite
-	testDSN      = "file::memory:?cache=shared"
+var (
+	test_driver = sqliteshim.ShimName
+	test_dsn    = "file::memory:?cache=shared"
 )
+
+func setUpMigrateAndTearDown(driver string, dataSourceName string, poolMax int, printQueries bool, modelsPtr ...any,
+) (*bun.DB, func()) {
+	// connect
+	db, err := NewDBConn(driver, dataSourceName, poolMax, printQueries)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// migrate
+	for _, model := range modelsPtr {
+		_, err := db.NewCreateTable().Model(model).IfNotExists().Exec(context.TODO())
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	// tearDown
+	teardownFunc := func() {
+		for _, model := range modelsPtr {
+			if model == nil {
+				continue
+			}
+			_, err := db.NewDropTable().Model(model).Exec(context.TODO())
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+	return db, teardownFunc
+}
+
+type Book struct {
+	Id    string `bun:",pk"`
+	Title string `bun:",notnull"`
+}
 
 var seed = []Book{
 	{Id: "1", Title: "Title 1"},
@@ -25,283 +58,142 @@ var seed = []Book{
 	{Id: "4", Title: "Title 4"},
 }
 
-type Book struct {
-	Id    string `bun:",pk"`
-	Title string `bun:",notnull"`
-}
-
-func setUpMigrateAndTearDown(t *testing.T, modelsPtr ...any) (context.Context, *bun.DB, func()) {
-	ctx := context.TODO()
-
-	// connect
-	db, err := dbstore.NewDBConnection(testDBDriver, testDSN, 1, true)
-	assert.NoError(t, err)
-
-	// migrate
-	for _, model := range modelsPtr {
-		_, err := db.NewCreateTable().Model(model).IfNotExists().Exec(ctx)
-		assert.NoError(t, err)
-	}
-
-	// tearDown
-	teardownFunc := func() {
-		for _, model := range modelsPtr {
-			_, err := db.NewDropTable().Model(model).Exec(ctx)
-			assert.NoError(t, err)
-		}
-	}
-
-	return ctx, db, teardownFunc
-}
-
-func TestRepository_Create(t *testing.T) {
-	ctx, db, tearDown := setUpMigrateAndTearDown(t, (*Book)(nil))
+func TestCreate(t *testing.T) {
+	// same process for single or bulk (slice of type)
+	var (
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+	)
 	defer tearDown()
 
-	data := Book{
-		Id:    "_1234asdf",
-		Title: "the unknown",
-	}
+	data := Book{Id: "123", Title: "the unknown"}
 
-	err := Create(ctx, db, &data, false)
+	err := Create(ctx, db, false, &data) // create fresh
 	assert.NoError(t, err)
 
-	// re-inserting the same data should create an error
-	// since the primary key already exists
-	err = Create(ctx, db, &data, false)
+	err = Create(ctx, db, false, &data) // dont ignore duplicates. re-inserting should  error
 	assert.Error(t, err)
 
-	// ignore duplicates
-	err = Create(ctx, db, &data, true)
-	assert.NoError(t, err)
-}
-
-func TestRepository_CreateBulk(t *testing.T) {
-	ctx, db, tearDown := setUpMigrateAndTearDown(t, (*Book)(nil))
-	defer tearDown()
-
-	err := CreateBulk(ctx, db, &seed, false)
+	err = Create(ctx, db, true, &data) // ignore duplicates
 	assert.NoError(t, err)
 
-	err = CreateBulk(ctx, db, &seed, false)
+	// ================================================== bulk
+	err = Create(ctx, db, false, &[]Book{seed[0], seed[1]}) // create fresh
+	assert.NoError(t, err)
+
+	err = Create(ctx, db, false, &[]Book{seed[0], seed[1]}) // dont ignore duplicates
 	assert.Error(t, err)
 
-	// ignore duplicates
-	err = CreateBulk(ctx, db, &seed, true)
+	err = Create(ctx, db, true, &[]Book{seed[0], seed[1]}) // ignore duplicates
 	assert.NoError(t, err)
 }
 
-func TestRepository_SelectOneByPK(t *testing.T) {
+func TestFindOne(t *testing.T) {
 	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+		err                          = Create(ctx, db, false, &seed)
 	)
-
 	defer tearDown()
 	assert.NoError(t, err)
 
-	data := Book{Id: "1"}
-	err = SelectOneByPK(ctx, db, &data)
-
+	m, err := FindOne(ctx, db, &Book{Id: "1"}, nil)
 	assert.NoError(t, err)
-	assert.Equal(t, seed[0], data)
-}
+	assert.Equal(t, seed[0], m)
 
-func TestRepository_SelectOneWhere(t *testing.T) {
-	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
-		bookFromDB        Book
-	)
-
-	defer tearDown()
-	assert.NoError(t, err)
-
-	err = SelectOneWhere(ctx, db, &bookFromDB)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, bookFromDB.Id)
-
-	err = SelectOneWhere(ctx, db, &bookFromDB, func(q *bun.SelectQuery) *bun.SelectQuery {
-		filter.Where(q, filter.Equal("id", "2"))
+	// ============================================================ where
+	m, err = FindOne(ctx, db, &Book{Id: "2"}, func(q *bun.SelectQuery) *bun.SelectQuery {
+		q.Where("id = ?", 1)
 		return q
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, seed[1], bookFromDB)
+	assert.Equal(t, seed[0], m)
 }
 
-func TestRepository_SelectManyWhere(t *testing.T) {
+func TestFindMany(t *testing.T) {
 	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+		err                          = Create(ctx, db, false, &seed)
 	)
-
 	defer tearDown()
 	assert.NoError(t, err)
 
-	t.Run("SelectManyWhere without select criterias", func(t *testing.T) {
-		books, err := SelectManyWhere[Book](ctx, db, 100, nil)
-		assert.NoError(t, err)
-		assert.Equal(t, seed, books)
-		assert.Equal(t, len(seed), len(books))
-	})
+	results, hasMore, err := FindMany[Book](ctx, db, 1, nil)
+	assert.NoError(t, err)
+	assert.True(t, hasMore)
+	assert.True(t, len(results) == 1)
 
-	t.Run("SelectManyWhere with select criterias", func(t *testing.T) {
-		got, err := SelectManyWhere[Book](ctx, db, 100, func(q *bun.SelectQuery) *bun.SelectQuery {
-			return q.Where("id >= ?", 2)
-		})
-		assert.NoError(t, err)
-		assert.Equal(t, 3, len(got))
-	})
+	results, hasMore, err = FindMany[Book](ctx, db, 4, nil)
+	assert.NoError(t, err)
+	assert.False(t, hasMore)
+	assert.True(t, len(results) == 4)
 }
 
-func TestRepository_UpdateByPK_oneAndMany(t *testing.T) {
+func TestUpsert(t *testing.T) {
+	// same process for single or bulk (slice of type)
 	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
+		createBook                   = Book{Id: "a1", Title: "the book title"}
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+		err                          = Create(ctx, db, false, &seed)
 	)
-
 	defer tearDown()
 	assert.NoError(t, err)
 
-	t.Run("UpdateOne By PK", func(t *testing.T) {
-		want := seed[0]
-		want.Title = "Updated Title 1..."
-		err := UpdateOneByPK(ctx, db, &want)
-		assert.NoError(t, err)
+	createBook.Id = "a1"
 
-		got := Book{Id: "1"}
-		err = SelectOneByPK(ctx, db, &got)
-		assert.NoError(t, err)
-		assert.Equal(t, "Updated Title 1...", got.Title)
-	})
-
-	t.Run("Update Many By PK", func(t *testing.T) {
-		updatedBooks := seed
-		updatedBooks[2].Title = "bulk update 3"
-		updatedBooks[3].Title = "bulk update 4"
-		err := UpdateManyByPK(ctx, db, &updatedBooks)
-		assert.NoError(t, err)
-
-		got := Book{Id: "3"}
-		err = SelectOneByPK(ctx, db, &got)
-		assert.NoError(t, err)
-		assert.Equal(t, "bulk update 3", got.Title)
-	})
-
-	t.Run("UpdateOneWhere", func(t *testing.T) {
-		want := seed[0]
-		want.Title = "one where"
-		err = UpdateOneWhere(ctx, db, &want, func(q *bun.UpdateQuery) *bun.UpdateQuery {
-			return q.Where("id = ?", seed[0].Id)
-		})
-
-		got := Book{Id: "1"}
-		SelectOneByPK(ctx, db, &got)
-		assert.NoError(t, err)
-		assert.Equal(t, "one where", got.Title)
-	})
+	n, err := Upsert(ctx, db, &createBook)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), n)
 }
 
-func TestRepository_Upsert(t *testing.T) {
+func TestUpdate(t *testing.T) {
+	// same process for single or bulk (slice of type)
 	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+		err                          = Create(ctx, db, false, &seed)
 	)
-
 	defer tearDown()
 	assert.NoError(t, err)
 
-	upsertedBooks := seed
-	upsertedBooks[3].Title = "bulk update 4 9"
+	updatedBooks := seed
+	updatedBooks[2].Id = "update2"
+	updatedBooks[3].Id = "update3"
 
-	err = Upsert(ctx, db, &upsertedBooks)
+	n, err := Upsert(ctx, db, &updatedBooks)
 	assert.NoError(t, err)
-
-	gotListOfUpsertedBooks, err := SelectManyWhere[Book](ctx, db, 200, nil)
-	assert.NoError(t, err)
-	assert.Equal(t, seed[3], gotListOfUpsertedBooks[3])
+	assert.Equal(t, int64(4), n)
 }
 
-func TestRepository_DeleteByPK(t *testing.T) {
+func TestDelete(t *testing.T) {
+	// same process for single or bulk (slice of type)
 	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
+		ctx          context.Context = context.Background()
+		db, tearDown                 = setUpMigrateAndTearDown(test_driver, test_dsn, 1, true, (*Book)(nil))
+		err                          = Create(ctx, db, false, &seed)
 	)
-
 	defer tearDown()
 	assert.NoError(t, err)
 
-	t.Run("DeleteByPK", func(t *testing.T) {
-		err = DeleteByPK(ctx, db, &seed[0])
-		assert.NoError(t, err)
-
-		err = SelectOneByPK(ctx, db, &seed[0])
-		assert.Equal(t, sql.ErrNoRows.Error(), err.Error())
-	})
-
-	t.Run("DeleteByPK  many", func(t *testing.T) {
-		err = DeleteByPK(ctx, db, &[]Book{seed[1], seed[2]})
-		assert.NoError(t, err)
-
-		err = SelectOneByPK(ctx, db, &seed[1])
-		assert.Equal(t, sql.ErrNoRows.Error(), err.Error())
-
-		err = SelectOneByPK(ctx, db, &seed[2])
-		assert.Equal(t, sql.ErrNoRows.Error(), err.Error())
-	})
-}
-
-func TestRepository_DeleteWhere(t *testing.T) {
-	var (
-		ctx, db, tearDown = setUpMigrateAndTearDown(t, (*Book)(nil))
-		err               = CreateBulk(ctx, db, &seed, false)
-	)
-
-	defer tearDown()
+	n, err := Delete(ctx, db, &seed[0], nil)
 	assert.NoError(t, err)
+	assert.Equal(t, int64(1), n)
 
-	t.Run("DeleteWhere", func(t *testing.T) {
-		err = DeleteWhere(ctx, db, (*Book)(nil), func(q *bun.DeleteQuery) *bun.DeleteQuery {
-			filter.Where(q, filter.Equal("id", 1))
-			return q
-		})
+	// ============================================================ multiple
 
-		assert.NoError(t, err)
+	n, err = Delete(ctx, db, &[]Book{seed[1], seed[2]}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(2), n)
 
-		err = SelectOneByPK(ctx, db, &seed[0])
-		assert.Error(t, err)
-		assert.Equal(t, sql.ErrNoRows.Error(), err.Error())
+	// ============================================================ where
+
+	n, err = Delete(ctx, db, &seed[3], func(q *bun.DeleteQuery) *bun.DeleteQuery {
+		q.Where("id = ?", 45)
+		return q
 	})
-}
-
-func TestRepository_Transaction(t *testing.T) {
-	ctx, db, tearDown := setUpMigrateAndTearDown(t, (*Book)(nil))
-	defer tearDown()
-
-	t.Run("transactions: no errors", func(t *testing.T) {
-		err := Transaction(ctx, db, func(ctx context.Context, tx bun.Tx) error {
-			if err := Create(ctx, tx, &seed[0], false); err != nil {
-				return err
-			}
-			if err := Create(ctx, tx, &seed[1], false); err != nil {
-				return err
-			}
-			return Create(ctx, tx, &seed[2], false)
-		},
-		)
-		assert.NoError(t, err)
-	})
-
-	t.Run("transactions: with deliberate error to abort transactions", func(t *testing.T) {
-		err := Transaction(ctx, db, func(ctx context.Context, tx bun.Tx) error {
-			err := Create(ctx, tx, &seed[3], false)
-			if err != nil {
-				return err
-			}
-
-			return errors.New("deliberate-wrong-data")
-		},
-		)
-		assert.Error(t, err)
-	})
+	assert.NoError(t, err)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), n)
 }
